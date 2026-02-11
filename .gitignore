@@ -1,0 +1,9 @@
+node_modules/
+terms_of_reference.md
+README_dev.md
+
+# Файлы операционной системы и редакторов
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
