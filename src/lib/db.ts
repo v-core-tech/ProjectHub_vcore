@@ -36,6 +36,8 @@ export type AppState = {
   tags: Tag[];
   selectedProjectId?: string;
   faviconCache: Record<string, string>;
+  lastExportAt?: string;
+  lastExportSignature?: string;
 };
 
 const DB_NAME = "projecthub-db";
