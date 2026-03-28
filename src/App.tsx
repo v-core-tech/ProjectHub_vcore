@@ -1,4 +1,4 @@
-import { GripVertical, Pencil, Trash2 } from 'lucide-react'
+import { GripVertical, Pencil, Star, Trash2 } from 'lucide-react'
 import * as React from 'react'
 import { toast } from 'sonner'
 import { Badge } from './components/ui/badge'
@@ -22,7 +22,10 @@ import {
 	LinkItem,
 	Project,
 	Tag,
+	clearLastExportTimestamp,
+	loadLastExportTimestamp,
 	loadState,
+	saveLastExportTimestamp,
 	saveState,
 } from './lib/db'
 import { Locale, t } from './lib/i18n'
@@ -43,6 +46,9 @@ type LinkPayload = {
 	url: string
 	tags: string[]
 }
+
+const BACKUP_FRESH_DAYS = 7
+const GITHUB_URL = 'https://github.com/v-core-tech/ProjectHub_vcore'
 
 function generateId(prefix: string) {
 	return `${prefix}-${crypto.randomUUID()}`
@@ -178,7 +184,41 @@ function sumItems(items: IncomeExpenseItem[]) {
 }
 
 function faviconProxy(url: string) {
-	return `https://www.google.com/s2/favicons?sz=64&domain_url=${encodeURIComponent(url)}`
+	return `https://www.google.com/s2/favicons?sz=128&domain_url=${encodeURIComponent(url)}`
+}
+
+function hashSnapshot(value: string) {
+	let hash = 2166136261
+	for (let index = 0; index < value.length; index += 1) {
+		hash ^= value.charCodeAt(index)
+		hash = Math.imul(hash, 16777619)
+	}
+	return `fnv1a:${(hash >>> 0).toString(16).padStart(8, '0')}`
+}
+
+function normalizeBackupSignature(signature: unknown) {
+	if (typeof signature !== 'string' || signature.length === 0) return undefined
+	return signature.startsWith('{') ? hashSnapshot(signature) : signature
+}
+
+function getBackupSignature(state: AppState) {
+	const snapshot = {
+		locale: state.locale,
+		projects: state.projects,
+		links: state.links,
+		tags: state.tags,
+		selectedProjectId: state.selectedProjectId,
+		faviconCache: state.faviconCache,
+	}
+	return hashSnapshot(JSON.stringify(snapshot))
+}
+
+function getDaysSince(dateIso: string | null) {
+	if (!dateIso) return null
+	const parsed = new Date(dateIso)
+	if (Number.isNaN(parsed.getTime())) return null
+	const diffMs = Date.now() - parsed.getTime()
+	return Math.max(0, Math.floor(diffMs / (1000 * 60 * 60 * 24)))
 }
 
 function normalizeImportedState(raw: unknown): AppState | null {
@@ -248,12 +288,27 @@ function normalizeImportedState(raw: unknown): AppState | null {
 				? candidate.selectedProjectId
 				: projects[0]?.id,
 		faviconCache: candidate.faviconCache ?? {},
+		lastExportSignature: normalizeBackupSignature(
+			candidate.lastExportSignature,
+		),
 	}
+}
+
+function extractImportedLastExportTimestamp(raw: unknown): string | null {
+	if (!raw || typeof raw !== 'object') return null
+	const candidate = raw as { lastExportTimestamp?: unknown }
+	return typeof candidate.lastExportTimestamp === 'string'
+		? candidate.lastExportTimestamp
+		: null
 }
 
 export default function App() {
 	const [state, setState] = React.useState<AppState | null>(null)
 	const [loading, setLoading] = React.useState(true)
+	const [lastExportTimestamp, setLastExportTimestamp] = React.useState<string | null>(
+		null,
+	)
+	const [focusDatabaseSection, setFocusDatabaseSection] = React.useState(0)
 
 	const [settingsOpen, setSettingsOpen] = React.useState(false)
 	const [projectModalOpen, setProjectModalOpen] = React.useState(false)
@@ -285,6 +340,8 @@ export default function App() {
 		const init = async () => {
 			try {
 				const stored = await loadState()
+				const exportTimestamp = await loadLastExportTimestamp()
+				setLastExportTimestamp(exportTimestamp)
 				if (stored) {
 					setState(normalizeImportedState(stored) ?? createDemoState())
 				} else {
@@ -315,6 +372,31 @@ export default function App() {
 		)
 	}, [state])
 	const locale: Locale = state?.locale === 'en' ? 'en' : 'ru'
+	const currentSignature = state ? getBackupSignature(state) : null
+	const hasChangesSinceExport = state
+		? !state.lastExportSignature || state.lastExportSignature !== currentSignature
+		: false
+	const daysSinceExport = getDaysSince(lastExportTimestamp)
+	const exportIsFresh =
+		daysSinceExport !== null && daysSinceExport <= BACKUP_FRESH_DAYS
+	const syncStatus = !hasChangesSinceExport && exportIsFresh ? 'safe' : 'risk'
+	const syncStatusText =
+		syncStatus === 'safe'
+			? t(locale, 'syncStatusSafe')
+			: t(locale, 'syncStatusRisk')
+	const sidebarSyncStatusText =
+		syncStatus === 'safe'
+			? t(locale, 'sidebarSyncStatusSafe')
+			: t(locale, 'sidebarSyncStatusRisk')
+	const syncStatusTooltip =
+		syncStatus === 'safe'
+			? t(locale, 'syncStatusSafeHint', {
+					days: daysSinceExport ?? 0,
+					maxDays: BACKUP_FRESH_DAYS,
+				})
+			: daysSinceExport === null
+				? t(locale, 'syncStatusNeverExported')
+				: t(locale, 'syncStatusRiskHint', { days: daysSinceExport })
 
 	React.useEffect(() => {
 		setFilterTags([])
@@ -585,7 +667,14 @@ export default function App() {
 
 	const handleExportDatabase = () => {
 		if (!state) return
-		const blob = new Blob([JSON.stringify(state, null, 2)], {
+		const exportedAt = new Date().toISOString()
+		const exportSignature = getBackupSignature(state)
+		const exportPayload = {
+			...state,
+			lastExportSignature: exportSignature,
+			lastExportTimestamp: exportedAt,
+		}
+		const blob = new Blob([JSON.stringify(exportPayload, null, 2)], {
 			type: 'application/json;charset=utf-8',
 		})
 		const link = document.createElement('a')
@@ -595,6 +684,11 @@ export default function App() {
 		link.click()
 		link.remove()
 		URL.revokeObjectURL(link.href)
+		void saveLastExportTimestamp(exportedAt)
+		setLastExportTimestamp(exportedAt)
+		setState(prev =>
+			prev ? { ...prev, lastExportSignature: exportSignature } : prev,
+		)
 		toast.success(t(locale, 'databaseExported'))
 	}
 
@@ -603,11 +697,19 @@ export default function App() {
 			const text = await file.text()
 			const parsed = JSON.parse(text) as unknown
 			const normalized = normalizeImportedState(parsed)
+			const importedLastExportTimestamp =
+				extractImportedLastExportTimestamp(parsed)
 			if (!normalized) {
 				toast.error(t(locale, 'databaseInvalid'))
 				return
 			}
 			setState(normalized)
+			setLastExportTimestamp(importedLastExportTimestamp)
+			if (importedLastExportTimestamp) {
+				await saveLastExportTimestamp(importedLastExportTimestamp)
+			} else {
+				await clearLastExportTimestamp()
+			}
 			toast.success(t(locale, 'databaseImported'))
 		} catch {
 			toast.error(t(locale, 'databaseImportError'))
@@ -660,13 +762,42 @@ export default function App() {
 	return (
 		<div className='min-h-screen bg-background text-foreground'>
 			<div className='grid min-h-screen grid-cols-1 lg:grid-cols-[300px_1fr]'>
-				<aside className='border-r border-border bg-secondary/80 p-6 backdrop-blur lg:sticky lg:top-0 lg:h-screen'>
+				<aside className='flex flex-col border-r border-border bg-secondary/80 p-6 backdrop-blur lg:sticky lg:top-0 lg:h-screen'>
 					<div className='text-xs font-semibold uppercase tracking-[0.2em]'>
 						{t(locale, 'brandName')}
 					</div>
 					<div className='mt-1 text-xs text-muted-foreground'>
 						{t(locale, 'brandBy')}
 					</div>
+					<button
+						type='button'
+						className='mt-3 inline-flex items-center gap-2 self-start rounded-md px-2 py-1 text-sm transition hover:bg-muted'
+						title={syncStatusTooltip}
+						aria-label={sidebarSyncStatusText}
+						onClick={() => {
+							setFocusDatabaseSection(token => token + 1)
+							setSettingsOpen(true)
+						}}
+					>
+						<span
+							className='sr-only'
+							role='status'
+							aria-live='polite'
+							aria-atomic='true'
+						>
+							{sidebarSyncStatusText}
+						</span>
+						<span
+							aria-hidden='true'
+							className={cn(
+								'h-2.5 w-2.5 rounded-full',
+								syncStatus === 'safe' ? 'bg-success' : 'bg-danger',
+							)}
+						/>
+						<span className='text-sm text-foreground'>
+							{sidebarSyncStatusText}
+						</span>
+					</button>
 
 					<div className='my-4 border-t border-border' />
 
@@ -701,7 +832,7 @@ export default function App() {
 						{t(locale, 'projects')}
 					</p>
 
-					<div className='mt-3 space-y-2 overflow-y-auto p-2 scrollbar lg:max-h-[calc(100vh-310px)]'>
+					<div className='mt-3 flex-1 space-y-2 overflow-y-auto p-2 scrollbar lg:max-h-[calc(100vh-390px)]'>
 						{orderedProjects.map(project => {
 							const isActive = project.id === state.selectedProjectId
 							return (
@@ -803,6 +934,15 @@ export default function App() {
 					>
 						{t(locale, 'addProject')}
 					</Button>
+
+					<div className='mt-6 space-y-2 border-t border-border pt-4'>
+						<Button variant='outline' className='w-full justify-start' asChild>
+							<a href={GITHUB_URL} target='_blank' rel='noreferrer'>
+								<Star className='mr-2 h-4 w-4' />
+								{t(locale, 'starOnGithub')}
+							</a>
+						</Button>
+					</div>
 				</aside>
 
 				<main className='p-6 lg:p-10'>
@@ -987,6 +1127,11 @@ export default function App() {
 					<TagSettings
 						locale={locale}
 						tags={state.tags}
+						lastExportTimestamp={lastExportTimestamp}
+						syncStatus={syncStatus}
+						syncStatusText={syncStatusText}
+						syncStatusTooltip={syncStatusTooltip}
+						focusDatabaseSection={focusDatabaseSection}
 						onClose={() => setSettingsOpen(false)}
 						onSave={handleUpdateTags}
 						onExport={handleExportDatabase}
@@ -1471,6 +1616,11 @@ function LinkForm({
 function TagSettings({
 	locale,
 	tags,
+	lastExportTimestamp,
+	syncStatus,
+	syncStatusText,
+	syncStatusTooltip,
+	focusDatabaseSection,
 	onSave,
 	onClose,
 	onExport,
@@ -1479,6 +1629,11 @@ function TagSettings({
 }: {
 	locale: Locale
 	tags: Tag[]
+	lastExportTimestamp: string | null
+	syncStatus: 'safe' | 'risk'
+	syncStatusText: string
+	syncStatusTooltip: string
+	focusDatabaseSection: number
 	onSave: (tags: Tag[]) => void
 	onClose: () => void
 	onExport: () => void
@@ -1488,10 +1643,27 @@ function TagSettings({
 	const [localTags, setLocalTags] = React.useState(tags)
 	const [newTag, setNewTag] = React.useState('')
 	const fileInputRef = React.useRef<HTMLInputElement | null>(null)
+	const exportButtonRef = React.useRef<HTMLButtonElement | null>(null)
+	const databaseSectionRef = React.useRef<HTMLDivElement | null>(null)
 
 	React.useEffect(() => {
 		setLocalTags(tags)
 	}, [tags])
+
+	React.useEffect(() => {
+		if (focusDatabaseSection === 0) return
+		databaseSectionRef.current?.scrollIntoView({
+			block: 'nearest',
+			behavior: 'smooth',
+		})
+		exportButtonRef.current?.focus()
+	}, [focusDatabaseSection])
+
+	const lastExportLabel = lastExportTimestamp
+		? new Date(lastExportTimestamp).toLocaleString(
+				locale === 'ru' ? 'ru-RU' : 'en-US',
+			)
+		: t(locale, 'never')
 
 	return (
 		<div>
@@ -1526,7 +1698,10 @@ function TagSettings({
 				))}
 			</div>
 
-			<div className='mt-4 rounded-xl border border-border bg-muted p-3'>
+			<div
+				ref={databaseSectionRef}
+				className='mt-4 rounded-xl border border-border bg-muted p-3'
+			>
 				<div className='text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground'>
 					{t(locale, 'addTag')}
 				</div>
@@ -1560,7 +1735,7 @@ function TagSettings({
 					{t(locale, 'database')}
 				</div>
 				<div className='mt-2 flex flex-wrap gap-2'>
-					<Button variant='outline' onClick={onExport}>
+					<Button variant='outline' onClick={onExport} ref={exportButtonRef}>
 						{t(locale, 'exportDatabase')}
 					</Button>
 					<Button
@@ -1586,6 +1761,23 @@ function TagSettings({
 							event.currentTarget.value = ''
 						}}
 					/>
+				</div>
+				<div className='mt-3 space-y-2 text-sm text-muted-foreground'>
+					<div className='flex items-center gap-2'>
+						<span>{t(locale, 'databaseStatusLabel')}</span>
+						<span className='font-medium text-foreground'>{syncStatusText}</span>
+						<span
+							aria-hidden='true'
+							className={cn(
+								'h-2.5 w-2.5 rounded-full',
+								syncStatus === 'safe' ? 'bg-success' : 'bg-danger',
+							)}
+						/>
+					</div>
+					<p>{t(locale, 'lastBackupLabel', { date: lastExportLabel })}</p>
+					<p>{syncStatusTooltip}</p>
+					<p>{t(locale, 'databaseSafetyHint')}</p>
+					<p>{t(locale, 'databaseOfflineHint')}</p>
 				</div>
 			</div>
 

@@ -1,6 +1,8 @@
 {
   "brandName": "ProjectHub",
   "brandBy": "created by v-core.tech",
+  "sidebarSyncStatusSafe": "Данные защищены",
+  "sidebarSyncStatusRisk": "Не сохранено",
   "settings": "Настройки",
   "language": "Язык",
   "projects": "Проекты:",
@@ -86,6 +88,16 @@
   "exportDatabase": "Экспортировать базу",
   "importDatabase": "Импортировать базу",
   "resetDatabase": "Сбросить до демо",
+  "syncStatusSafe": "Синхронизированно",
+  "syncStatusRisk": "Есть риск потерять данные",
+  "syncStatusSafeHint": "Последний экспорт был {{days}} дн. назад. Локальная база в безопасном состоянии.",
+  "syncStatusRiskHint": "Данные не были сохранены {{days}} дн. назад - рекомендуем экспортировать базу.",
+  "syncStatusNeverExported": "База еще не экспортировалась - рекомендуем сделать резервную копию.",
+  "databaseStatusLabel": "Статус:",
+  "lastBackupLabel": "Последний экспорт: {{date}}",
+  "databaseSafetyHint": "Данные могут потеряться при очистке браузера, смене устройства или ручном удалении локального хранилища.",
+  "databaseOfflineHint": "Преимущество в том, что данные остаются приватными и приложение работает в offline-first режиме без сервера.",
+  "never": "Еще не экспортировалось",
   "confirm": "Подтвердить",
   "emptyValues": "Нет значений"
 }

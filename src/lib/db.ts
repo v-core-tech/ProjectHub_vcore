@@ -36,13 +36,13 @@ export type AppState = {
   tags: Tag[];
   selectedProjectId?: string;
   faviconCache: Record<string, string>;
-  lastExportAt?: string;
   lastExportSignature?: string;
 };
 
 const DB_NAME = "projecthub-db";
 const STORE_NAME = "app";
 const STATE_KEY = "state";
+const LAST_EXPORT_TIMESTAMP_KEY = "lastExportTimestamp";
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -75,6 +75,39 @@ export async function saveState(state: AppState): Promise<void> {
     const tx = db.transaction(STORE_NAME, "readwrite");
     const store = tx.objectStore(STORE_NAME);
     const request = store.put(state, STATE_KEY);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve();
+  });
+}
+
+export async function loadLastExportTimestamp(): Promise<string | null> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readonly");
+    const store = tx.objectStore(STORE_NAME);
+    const request = store.get(LAST_EXPORT_TIMESTAMP_KEY);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve((request.result as string) ?? null);
+  });
+}
+
+export async function saveLastExportTimestamp(timestamp: string): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    const store = tx.objectStore(STORE_NAME);
+    const request = store.put(timestamp, LAST_EXPORT_TIMESTAMP_KEY);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve();
+  });
+}
+
+export async function clearLastExportTimestamp(): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    const store = tx.objectStore(STORE_NAME);
+    const request = store.delete(LAST_EXPORT_TIMESTAMP_KEY);
     request.onerror = () => reject(request.error);
     request.onsuccess = () => resolve();
   });

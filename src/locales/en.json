@@ -1,6 +1,8 @@
 {
   "brandName": "ProjectHub",
   "brandBy": "created by v-core.tech",
+  "sidebarSyncStatusSafe": "Data protected",
+  "sidebarSyncStatusRisk": "Not saved",
   "settings": "Settings",
   "language": "Language",
   "projects": "Projects:",
@@ -86,6 +88,16 @@
   "exportDatabase": "Export database",
   "importDatabase": "Import database",
   "resetDatabase": "Reset to demo",
+  "syncStatusSafe": "Synchronized",
+  "syncStatusRisk": "There is a risk of losing data",
+  "syncStatusSafeHint": "Last export was {{days}} day(s) ago. Local data is in a safe state.",
+  "syncStatusRiskHint": "Data not backed up for {{days}} days - consider exporting.",
+  "syncStatusNeverExported": "Database has not been exported yet - consider creating a backup.",
+  "databaseStatusLabel": "Status:",
+  "lastBackupLabel": "Last export: {{date}}",
+  "databaseSafetyHint": "Data can be lost if browser storage is cleared, the device is changed, or local storage is removed manually.",
+  "databaseOfflineHint": "The advantage is privacy: data stays local and the app remains offline-first without a server.",
+  "never": "Never exported",
   "confirm": "Confirm",
   "emptyValues": "No values"
 }
