@@ -743,12 +743,16 @@ export default function App() {
 														: prev,
 												)
 											}
-											className='flex-1 text-left'
+											className='min-w-0 flex-1 text-left'
+											title={project.shortDescription || t(locale, 'noDescription')}
 										>
-											<div className='text-sm font-semibold'>
+											<div className='truncate text-sm font-semibold' title={project.title}>
 												{project.title}
 											</div>
-											<div className='text-xs text-muted-foreground'>
+											<div
+												className='truncate text-xs text-muted-foreground'
+												title={project.shortDescription || t(locale, 'noDescription')}
+											>
 												{project.shortDescription || t(locale, 'noDescription')}
 											</div>
 										</button>
@@ -826,17 +830,27 @@ export default function App() {
 						<div className='space-y-6'>
 							<Card>
 								<CardContent className='p-6'>
-									<div className='flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between'>
-										<div>
-											<h1 className='text-2xl font-semibold'>
+									<div className='flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between'>
+										<div className='w-full max-w-3xl flex-1'>
+											<h1 className='break-words text-2xl font-semibold'>
 												{currentProject.title}
 											</h1>
-											<p className='mt-1 text-sm text-muted-foreground'>
+											<p className='mt-2 max-w-3xl break-words text-sm leading-6 text-muted-foreground overflow-hidden [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3]'>
 												{currentProject.shortDescription ||
 													t(locale, 'noDescription')}
 											</p>
+											<button
+												type='button'
+												className='mt-2 text-sm font-medium text-sky-400 transition hover:text-sky-300'
+												onClick={() => {
+													setEditingProject(currentProject)
+													setProjectModalOpen(true)
+												}}
+											>
+												{t(locale, 'readMore')}
+											</button>
 										</div>
-										<div className='grid w-full grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-3'>
+										<div className='grid w-full shrink-0 grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-3 xl:max-w-[720px]'>
 											<KpiCard
 												label={t(locale, 'kpiExpenses')}
 												value={totalExpenses}

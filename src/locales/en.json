@@ -61,6 +61,7 @@
   "projectName": "Name",
   "projectDescription": "Short description",
   "projectNameHint": "Project name is required.",
+  "readMore": "more",
   "cancel": "Cancel",
   "save": "Save",
   "financeExpenses": "Operating expenses",

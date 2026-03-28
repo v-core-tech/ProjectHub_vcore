@@ -1,6 +1,7 @@
 node_modules/
 terms_of_reference.md
 README_dev.md
+dist/
 
 # Файлы операционной системы и редакторов
 .DS_Store
