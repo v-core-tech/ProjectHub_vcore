@@ -61,6 +61,7 @@
   "projectName": "Название",
   "projectDescription": "Краткое описание",
   "projectNameHint": "Минимум нужно указать название проекта.",
+  "readMore": "прочитать",
   "cancel": "Отмена",
   "save": "Сохранить",
   "financeExpenses": "Операционные расходы",
