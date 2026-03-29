@@ -21,6 +21,9 @@ export type Project = {
   shortDescription: string;
   monthlyOperatingCosts: IncomeExpenseItem[];
   monthlyIncome: IncomeExpenseItem[];
+  preferences?: {
+    showBudgets: boolean;
+  };
   orderIndex: number;
 };
 
