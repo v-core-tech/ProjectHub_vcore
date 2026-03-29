@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { Badge } from './components/ui/badge'
 import { Button } from './components/ui/button'
 import { Card, CardContent } from './components/ui/card'
+import { Checkbox } from './components/ui/checkbox'
 import { Combobox } from './components/ui/combobox'
 import { ComboboxMultiple } from './components/ui/combobox-multiple'
 import {
@@ -52,6 +53,14 @@ const GITHUB_URL = 'https://github.com/v-core-tech/ProjectHub_vcore'
 
 function generateId(prefix: string) {
 	return `${prefix}-${crypto.randomUUID()}`
+}
+
+function normalizeProjectPreferences(
+	preferences: Project['preferences'] | undefined,
+) {
+	return {
+		showBudgets: preferences?.showBudgets ?? true,
+	}
 }
 
 function createDemoState(): AppState {
@@ -103,6 +112,7 @@ function createDemoState(): AppState {
 				comment: 'Enterprise support add-on',
 			},
 		],
+		preferences: { showBudgets: true },
 		orderIndex: 0,
 	}
 	const links: LinkItem[] = [
@@ -246,6 +256,7 @@ function normalizeImportedState(raw: unknown): AppState | null {
 					comment: item.comment || '',
 				}))
 			: [],
+		preferences: normalizeProjectPreferences(project.preferences),
 		orderIndex: Number.isFinite(project.orderIndex)
 			? Number(project.orderIndex)
 			: index,
@@ -436,9 +447,17 @@ export default function App() {
 		return list
 	}, [projectLinks, filterTags, filterDomains, sortOption])
 
+	React.useEffect(() => {
+		if ((currentProject?.preferences?.showBudgets ?? true) || financeModal === null) {
+			return
+		}
+		setFinanceModal(null)
+	}, [currentProject?.preferences?.showBudgets, financeModal])
+
 	const handleCreateProject = (data: {
 		title: string
 		shortDescription: string
+		showBudgets: boolean
 	}) => {
 		setState(prev => {
 			if (!prev) return prev
@@ -448,6 +467,7 @@ export default function App() {
 				shortDescription: data.shortDescription,
 				monthlyOperatingCosts: [],
 				monthlyIncome: [],
+				preferences: { showBudgets: data.showBudgets },
 				orderIndex: prev.projects.length,
 			}
 			return {
@@ -461,8 +481,9 @@ export default function App() {
 
 	const handleUpdateProject = (
 		projectId: string,
-		data: { title: string; shortDescription: string },
+		data: { title: string; shortDescription: string; showBudgets: boolean },
 	) => {
+		const previousProject = state?.projects.find(project => project.id === projectId)
 		setState(prev => {
 			if (!prev) return prev
 			return {
@@ -473,11 +494,19 @@ export default function App() {
 								...project,
 								title: data.title,
 								shortDescription: data.shortDescription,
+								preferences: { showBudgets: data.showBudgets },
 							}
 						: project,
 				),
 			}
 		})
+		if (
+			previousProject &&
+			(previousProject.preferences?.showBudgets ?? true) !== data.showBudgets
+		) {
+			toast.success(t(locale, 'financeVisibilityUpdated'))
+			return
+		}
 		toast.success(t(locale, 'projectUpdated'))
 	}
 
@@ -757,6 +786,7 @@ export default function App() {
 	const totalIncome = currentProject
 		? sumItems(currentProject.monthlyIncome)
 		: 0
+	const showBudgets = currentProject?.preferences?.showBudgets ?? true
 	const profit = totalIncome + totalExpenses
 
 	return (
@@ -990,26 +1020,28 @@ export default function App() {
 												{t(locale, 'readMore')}
 											</button>
 										</div>
-										<div className='grid w-full shrink-0 grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-3 xl:max-w-[720px]'>
-											<KpiCard
-												label={t(locale, 'kpiExpenses')}
-												value={totalExpenses}
-												color='danger'
-												onClick={() => setFinanceModal('expenses')}
-											/>
-											<KpiCard
-												label={t(locale, 'kpiIncome')}
-												value={totalIncome}
-												color='success'
-												onClick={() => setFinanceModal('income')}
-											/>
-											<KpiCard
-												label={t(locale, 'kpiProfit')}
-												value={profit}
-												color={profit >= 0 ? 'success' : 'danger'}
-												onClick={() => setFinanceModal('income')}
-											/>
-										</div>
+										{showBudgets && (
+											<div className='grid w-full shrink-0 grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-3 xl:max-w-[720px]'>
+												<KpiCard
+													label={t(locale, 'kpiExpenses')}
+													value={totalExpenses}
+													color='danger'
+													onClick={() => setFinanceModal('expenses')}
+												/>
+												<KpiCard
+													label={t(locale, 'kpiIncome')}
+													value={totalIncome}
+													color='success'
+													onClick={() => setFinanceModal('income')}
+												/>
+												<KpiCard
+													label={t(locale, 'kpiProfit')}
+													value={profit}
+													color={profit >= 0 ? 'success' : 'danger'}
+													onClick={() => setFinanceModal('income')}
+												/>
+											</div>
+										)}
 									</div>
 								</CardContent>
 							</Card>
@@ -1197,7 +1229,7 @@ export default function App() {
 			</Dialog>
 
 			<Dialog
-				open={financeModal !== null}
+				open={showBudgets && financeModal !== null}
 				onOpenChange={open => !open && setFinanceModal(null)}
 			>
 				<DialogContent>
@@ -1348,12 +1380,19 @@ function ProjectForm({
 }: {
 	locale: Locale
 	project: Project | null
-	onSave: (data: { title: string; shortDescription: string }) => void
+	onSave: (data: {
+		title: string
+		shortDescription: string
+		showBudgets: boolean
+	}) => void
 	onClose: () => void
 }) {
 	const [title, setTitle] = React.useState(project?.title ?? '')
 	const [description, setDescription] = React.useState(
 		project?.shortDescription ?? '',
+	)
+	const [showBudgets, setShowBudgets] = React.useState(
+		project?.preferences?.showBudgets ?? true,
 	)
 
 	return (
@@ -1385,6 +1424,24 @@ function ProjectForm({
 						onChange={event => setDescription(event.target.value)}
 					/>
 				</div>
+
+				<div className='rounded-xl border border-border bg-muted p-3'>
+					<label className='flex cursor-pointer items-start gap-3'>
+						<Checkbox
+							checked={showBudgets}
+							onCheckedChange={checked => setShowBudgets(checked === true)}
+							className='mt-0.5'
+						/>
+						<div>
+							<div className='text-sm font-medium text-foreground'>
+								{t(locale, 'showBudgets')}
+							</div>
+							<p className='mt-1 text-sm text-muted-foreground'>
+								{t(locale, 'showBudgetsHint')}
+							</p>
+						</div>
+					</label>
+				</div>
 			</div>
 
 			<DialogFooter className='mt-6'>
@@ -1398,7 +1455,11 @@ function ProjectForm({
 							toast.error(t(locale, 'projectTitleRequired'))
 							return
 						}
-						onSave({ title: cleanTitle, shortDescription: description.trim() })
+						onSave({
+							title: cleanTitle,
+							shortDescription: description.trim(),
+							showBudgets,
+						})
 					}}
 				>
 					{t(locale, 'save')}
