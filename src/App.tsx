@@ -1,11 +1,20 @@
-import { GripVertical, Pencil, Star, Trash2 } from 'lucide-react'
+import {
+	Cloud,
+	CloudOff,
+	GripVertical,
+	Languages,
+	Pencil,
+	Settings,
+	ShieldAlert,
+	Star,
+	Trash2,
+} from 'lucide-react'
 import * as React from 'react'
 import { toast } from 'sonner'
 import { Badge } from './components/ui/badge'
 import { Button } from './components/ui/button'
 import { Card, CardContent } from './components/ui/card'
 import { Checkbox } from './components/ui/checkbox'
-import { Combobox } from './components/ui/combobox'
 import { ComboboxMultiple } from './components/ui/combobox-multiple'
 import {
 	Dialog,
@@ -20,17 +29,28 @@ import { Textarea } from './components/ui/textarea'
 import {
 	AppState,
 	IncomeExpenseItem,
+	ImportSingleProjectResult,
 	LinkItem,
 	Project,
+	SingleProjectExport,
 	Tag,
 	clearLastExportTimestamp,
+	exportSingleProject,
+	importSingleProject,
 	loadLastExportTimestamp,
 	loadState,
 	saveLastExportTimestamp,
 	saveState,
 } from './lib/db'
 import { Locale, t } from './lib/i18n'
-import { cn, downloadCsv, extractDomain, formatAmount } from './lib/utils'
+import {
+	cn,
+	downloadCsv,
+	extractDomain,
+	formatAmount,
+	isSafeExternalUrl,
+	isSafeImageUrl,
+} from './lib/utils'
 
 const DEFAULT_FAVICON =
 	"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 64 64'><rect width='64' height='64' rx='16' fill='%23e5e2dc'/><path d='M18 20h28v24H18z' fill='%231c1b1a'/><path d='M22 24h20v4H22zM22 30h20v4H22zM22 36h14v4H22z' fill='%23f5f4f0'/></svg>"
@@ -48,11 +68,34 @@ type LinkPayload = {
 	tags: string[]
 }
 
+type ProjectImportConflictState = {
+	projectName: string
+	jsonData: SingleProjectExport
+	suggestedName: string
+}
+
+type ExternalLinkWarningState = {
+	projectId: string
+	projectTitle: string
+	url: string
+}
+
 const BACKUP_FRESH_DAYS = 7
 const GITHUB_URL = 'https://github.com/v-core-tech/ProjectHub_vcore'
+const MAX_PROJECT_IMPORT_FILE_BYTES = 1024 * 1024
 
 function generateId(prefix: string) {
 	return `${prefix}-${crypto.randomUUID()}`
+}
+
+function formatFileSize(bytes: number) {
+	if (bytes >= 1024 * 1024) {
+		return `${(bytes / (1024 * 1024)).toFixed(0)} MB`
+	}
+	if (bytes >= 1024) {
+		return `${Math.ceil(bytes / 1024)} KB`
+	}
+	return `${bytes} B`
 }
 
 function normalizeProjectPreferences(
@@ -60,6 +103,7 @@ function normalizeProjectPreferences(
 ) {
 	return {
 		showBudgets: preferences?.showBudgets ?? true,
+		isTrusted: preferences?.isTrusted ?? true,
 	}
 }
 
@@ -112,7 +156,7 @@ function createDemoState(): AppState {
 				comment: 'Enterprise support add-on',
 			},
 		],
-		preferences: { showBudgets: true },
+		preferences: { showBudgets: true, isTrusted: true },
 		orderIndex: 0,
 	}
 	const links: LinkItem[] = [
@@ -319,9 +363,9 @@ export default function App() {
 	const [lastExportTimestamp, setLastExportTimestamp] = React.useState<string | null>(
 		null,
 	)
-	const [focusDatabaseSection, setFocusDatabaseSection] = React.useState(0)
 
 	const [settingsOpen, setSettingsOpen] = React.useState(false)
+	const [databaseOpen, setDatabaseOpen] = React.useState(false)
 	const [projectModalOpen, setProjectModalOpen] = React.useState(false)
 	const [linkModalOpen, setLinkModalOpen] = React.useState(false)
 	const [financeModal, setFinanceModal] = React.useState<
@@ -330,6 +374,14 @@ export default function App() {
 	const [confirmState, setConfirmState] = React.useState<ConfirmState | null>(
 		null,
 	)
+	const [projectImportConflict, setProjectImportConflict] =
+		React.useState<ProjectImportConflictState | null>(null)
+	const [projectImportRename, setProjectImportRename] = React.useState('')
+	const [externalLinkWarning, setExternalLinkWarning] =
+		React.useState<ExternalLinkWarningState | null>(null)
+	const [trustConfirmProjectId, setTrustConfirmProjectId] = React.useState<
+		string | null
+	>(null)
 
 	const [editingProject, setEditingProject] = React.useState<Project | null>(
 		null,
@@ -346,6 +398,7 @@ export default function App() {
 		null,
 	)
 	const [dropProjectId, setDropProjectId] = React.useState<string | null>(null)
+	const projectImportInputRef = React.useRef<HTMLInputElement | null>(null)
 
 	React.useEffect(() => {
 		const init = async () => {
@@ -454,6 +507,50 @@ export default function App() {
 		setFinanceModal(null)
 	}, [currentProject?.preferences?.showBudgets, financeModal])
 
+	const trustConfirmProject = React.useMemo(
+		() =>
+			trustConfirmProjectId && state
+				? state.projects.find(project => project.id === trustConfirmProjectId) ?? null
+				: null,
+		[state, trustConfirmProjectId],
+	)
+
+	const handleOpenProjectLink = (link: LinkItem) => {
+		if (!currentProject || !isSafeExternalUrl(link.url)) return
+		if (currentProject.preferences?.isTrusted ?? true) {
+			window.open(link.url, '_blank', 'noopener,noreferrer')
+			return
+		}
+		setExternalLinkWarning({
+			projectId: currentProject.id,
+			projectTitle: currentProject.title,
+			url: link.url,
+		})
+	}
+
+	const handleTrustProject = (projectId: string) => {
+		setState(prev => {
+			if (!prev) return prev
+			return {
+				...prev,
+				projects: prev.projects.map(project =>
+					project.id === projectId
+						? {
+								...project,
+								preferences: {
+									showBudgets: project.preferences?.showBudgets ?? true,
+									isTrusted: true,
+								},
+							}
+						: project,
+				),
+			}
+		})
+		setTrustConfirmProjectId(null)
+		setExternalLinkWarning(null)
+		toast.success(t(locale, 'projectMarkedTrusted'))
+	}
+
 	const handleCreateProject = (data: {
 		title: string
 		shortDescription: string
@@ -467,7 +564,7 @@ export default function App() {
 				shortDescription: data.shortDescription,
 				monthlyOperatingCosts: [],
 				monthlyIncome: [],
-				preferences: { showBudgets: data.showBudgets },
+				preferences: { showBudgets: data.showBudgets, isTrusted: true },
 				orderIndex: prev.projects.length,
 			}
 			return {
@@ -494,7 +591,10 @@ export default function App() {
 								...project,
 								title: data.title,
 								shortDescription: data.shortDescription,
-								preferences: { showBudgets: data.showBudgets },
+								preferences: {
+									showBudgets: data.showBudgets,
+									isTrusted: project.preferences?.isTrusted ?? true,
+								},
 							}
 						: project,
 				),
@@ -745,6 +845,108 @@ export default function App() {
 		}
 	}
 
+	const downloadJsonFile = (filename: string, payload: unknown) => {
+		const blob = new Blob([JSON.stringify(payload, null, 2)], {
+			type: 'application/json;charset=utf-8',
+		})
+		const link = document.createElement('a')
+		link.href = URL.createObjectURL(blob)
+		link.download = filename
+		document.body.appendChild(link)
+		link.click()
+		link.remove()
+		URL.revokeObjectURL(link.href)
+	}
+
+	const handleExportProject = async () => {
+		if (!currentProject || !state) return
+		await saveState(state)
+		const result = await exportSingleProject(currentProject.id)
+		if (!result) {
+			toast.error(t(locale, 'projectExportError'))
+			return
+		}
+		downloadJsonFile(result.filename, result.payload)
+		toast.success(t(locale, 'projectExported', { name: currentProject.title }))
+	}
+
+	const processProjectImportResult = (
+		result: ImportSingleProjectResult,
+		jsonData?: SingleProjectExport,
+	) => {
+		if (result.status === 'invalid') {
+			toast.error(
+				t(locale, 'projectImportInvalidDetailed', {
+					reason: t(locale, `projectImportReason.${result.reason}`),
+				}),
+			)
+			return
+		}
+
+		if (result.status === 'conflict') {
+			setProjectImportConflict({
+				projectName: result.projectName,
+				jsonData: jsonData ?? result.jsonData,
+				suggestedName: result.suggestedName,
+			})
+			setProjectImportRename(result.suggestedName)
+			return
+		}
+
+		setProjectImportConflict(null)
+		setProjectImportRename('')
+		setState(result.state)
+		toast.success(
+			t(locale, 'projectImportedSuccess', {
+				name: result.projectName,
+				links: result.importedLinks,
+				finance: result.importedFinanceRecords,
+			}),
+		)
+	}
+
+	const handleImportProjectData = async (
+		jsonData: unknown,
+		options?: { conflictResolution?: 'rename' | 'skip'; newProjectName?: string },
+	) => {
+		try {
+			const result = await importSingleProject(jsonData, {
+				baseState: state ?? undefined,
+				...options,
+			})
+			processProjectImportResult(
+				result,
+				jsonData as SingleProjectExport | undefined,
+			)
+		} catch {
+			toast.error(t(locale, 'projectImportError'))
+		}
+	}
+
+	const handleImportProjectFile = async (file: File) => {
+		if (file.size > MAX_PROJECT_IMPORT_FILE_BYTES) {
+			toast.error(
+				t(locale, 'projectImportFileTooLarge', {
+					size: formatFileSize(MAX_PROJECT_IMPORT_FILE_BYTES),
+				}),
+			)
+			return
+		}
+		try {
+			const text = await file.text()
+			const parsed = JSON.parse(text) as unknown
+			await handleImportProjectData(parsed)
+		} catch {
+			toast.error(t(locale, 'projectImportError'))
+		}
+	}
+
+	const handleOpenProjectImportPicker = () => {
+		if (!projectImportInputRef.current) return
+		projectImportInputRef.current.value = ''
+		projectImportInputRef.current.click()
+	}
+
 	const handleResetDatabase = () => {
 		setState(prev => {
 			const next = createDemoState()
@@ -799,64 +1001,89 @@ export default function App() {
 					<div className='mt-1 text-xs text-muted-foreground'>
 						{t(locale, 'brandBy')}
 					</div>
-					<button
-						type='button'
-						className='mt-3 inline-flex items-center gap-2 self-start rounded-md px-2 py-1 text-sm transition hover:bg-muted'
-						title={syncStatusTooltip}
-						aria-label={sidebarSyncStatusText}
-						onClick={() => {
-							setFocusDatabaseSection(token => token + 1)
-							setSettingsOpen(true)
-						}}
-					>
-						<span
-							className='sr-only'
-							role='status'
-							aria-live='polite'
-							aria-atomic='true'
+
+					<div className='mt-3 flex items-center gap-2'>
+						<Button
+							variant='outline'
+							size='icon'
+							className='h-10 w-10 shrink-0'
+							onClick={() => setSettingsOpen(true)}
+							title={t(locale, 'settings')}
+							aria-label={t(locale, 'settings')}
 						>
-							{sidebarSyncStatusText}
-						</span>
-						<span
-							aria-hidden='true'
-							className={cn(
-								'h-2.5 w-2.5 rounded-full',
-								syncStatus === 'safe' ? 'bg-success' : 'bg-danger',
+							<Settings className='h-4 w-4' />
+						</Button>
+						<Button
+							variant='outline'
+							size='icon'
+							className='h-10 w-10 shrink-0'
+							onClick={() =>
+								setState(prev =>
+									prev
+										? { ...prev, locale: prev.locale === 'en' ? 'ru' : 'en' }
+										: prev,
+								)
+							}
+							title={t(locale, 'language')}
+							aria-label={t(locale, 'language')}
+						>
+							<Languages className='h-4 w-4' />
+						</Button>
+						<Button
+							variant='outline'
+							size='icon'
+							className='h-10 w-10 shrink-0'
+							title={syncStatusTooltip}
+							aria-label={sidebarSyncStatusText}
+							onClick={() => setDatabaseOpen(true)}
+						>
+							<span
+								className='sr-only'
+								role='status'
+								aria-live='polite'
+								aria-atomic='true'
+							>
+								{sidebarSyncStatusText}
+							</span>
+							{syncStatus === 'safe' ? (
+								<Cloud className='h-4 w-4 text-success' />
+							) : (
+								<CloudOff className='h-4 w-4 text-danger' />
 							)}
-						/>
-						<span className='text-sm text-foreground'>
-							{sidebarSyncStatusText}
-						</span>
-					</button>
+						</Button>
+					</div>
 
 					<div className='my-4 border-t border-border' />
 
 					<Button
-						className='w-full justify-center'
-						variant='outline'
-						onClick={() => setSettingsOpen(true)}
+						className='w-full'
+						onClick={() => {
+							setEditingProject(null)
+							setProjectModalOpen(true)
+						}}
 					>
-						{t(locale, 'settings')}
+						{t(locale, 'addProject')}
 					</Button>
 
-					<div className='mt-3'>
-						<Combobox
-							value={locale}
-							onChange={value =>
-								setState(prev =>
-									prev
-										? { ...prev, locale: value === 'en' ? 'en' : 'ru' }
-										: prev,
-								)
-							}
-							options={[
-								{ value: 'ru', label: 'Русский' },
-								{ value: 'en', label: 'English' },
-							]}
-							placeholder={t(locale, 'language')}
-							searchPlaceholder={t(locale, 'language')}
-						/>
-					</div>
+					<Button
+						className='mt-3 w-full justify-center'
+						variant='outline'
+						onClick={handleOpenProjectImportPicker}
+					>
+						{t(locale, 'importProject')}
+					</Button>
+					<input
+						ref={projectImportInputRef}
+						type='file'
+						accept='application/json'
+						className='hidden'
+						onChange={async event => {
+							const file = event.target.files?.[0]
+							if (!file) return
+							await handleImportProjectFile(file)
+							event.currentTarget.value = ''
+						}}
+					/>
 
 					<p className='mt-6 pl-1 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground'>
 						{t(locale, 'projects')}
@@ -955,21 +1182,11 @@ export default function App() {
 						})}
 					</div>
 
-					<Button
-						className='mt-4 w-full'
-						onClick={() => {
-							setEditingProject(null)
-							setProjectModalOpen(true)
-						}}
-					>
-						{t(locale, 'addProject')}
-					</Button>
-
 					<div className='mt-6 space-y-2 border-t border-border pt-4'>
 						<Button variant='outline' className='w-full justify-start' asChild>
 							<a href={GITHUB_URL} target='_blank' rel='noreferrer'>
 								<Star className='mr-2 h-4 w-4' />
-								{t(locale, 'starOnGithub')}
+								{t(locale, 'star on Github')}
 							</a>
 						</Button>
 					</div>
@@ -1064,6 +1281,9 @@ export default function App() {
 											<Button variant='outline' onClick={handleExportCsv}>
 												{t(locale, 'exportCsv')}
 											</Button>
+											<Button variant='outline' onClick={handleExportProject}>
+												{t(locale, 'exportProject')}
+											</Button>
 											<Button
 												onClick={() => {
 													setEditingLink(null)
@@ -1122,15 +1342,19 @@ export default function App() {
                   </div> */}
 
 									<div className='mt-5 grid gap-4 md:grid-cols-2'>
-										{filteredLinks.map(link => (
-											<LinkCard
-												key={link.id}
-												link={link}
-												tags={state.tags}
-												locale={locale}
-												onEdit={() => {
-													setEditingLink(link)
-													setLinkModalOpen(true)
+											{filteredLinks.map(link => (
+												<LinkCard
+													key={link.id}
+													link={link}
+													tags={state.tags}
+													locale={locale}
+													isTrustedProject={
+														currentProject?.preferences?.isTrusted ?? true
+													}
+													onOpen={() => handleOpenProjectLink(link)}
+													onEdit={() => {
+														setEditingLink(link)
+														setLinkModalOpen(true)
 												}}
 												onDelete={() =>
 													setConfirmState({
@@ -1159,13 +1383,21 @@ export default function App() {
 					<TagSettings
 						locale={locale}
 						tags={state.tags}
+						onClose={() => setSettingsOpen(false)}
+						onSave={handleUpdateTags}
+					/>
+				</DialogContent>
+			</Dialog>
+
+			<Dialog open={databaseOpen} onOpenChange={setDatabaseOpen}>
+				<DialogContent>
+					<DatabaseSettings
+						locale={locale}
 						lastExportTimestamp={lastExportTimestamp}
 						syncStatus={syncStatus}
 						syncStatusText={syncStatusText}
 						syncStatusTooltip={syncStatusTooltip}
-						focusDatabaseSection={focusDatabaseSection}
-						onClose={() => setSettingsOpen(false)}
-						onSave={handleUpdateTags}
+						onClose={() => setDatabaseOpen(false)}
 						onExport={handleExportDatabase}
 						onImport={handleImportDatabase}
 						onReset={() =>
@@ -1276,6 +1508,120 @@ export default function App() {
 					)}
 				</DialogContent>
 			</Dialog>
+
+			<Dialog
+				open={projectImportConflict !== null}
+				onOpenChange={open => {
+					if (!open) {
+						setProjectImportConflict(null)
+						setProjectImportRename('')
+					}
+				}}
+			>
+				<DialogContent>
+					{projectImportConflict && (
+						<div>
+							<DialogHeader>
+								<DialogTitle>{t(locale, 'projectImportConflictTitle')}</DialogTitle>
+								<DialogDescription>
+									{t(locale, 'projectImportConflictDescription', {
+										name: projectImportConflict.projectName,
+									})}
+								</DialogDescription>
+							</DialogHeader>
+
+							<div className='mt-4 space-y-2'>
+								<label
+									htmlFor='project-import-rename'
+									className='text-sm font-medium'
+								>
+									{t(locale, 'projectImportRenameLabel')}
+								</label>
+								<Input
+									id='project-import-rename'
+									value={projectImportRename}
+									onChange={event => setProjectImportRename(event.target.value)}
+									placeholder={projectImportConflict.suggestedName}
+								/>
+							</div>
+
+							<DialogFooter className='mt-6'>
+								<Button
+									variant='outline'
+									onClick={() => {
+										setProjectImportConflict(null)
+										setProjectImportRename('')
+									}}
+								>
+									{t(locale, 'skip')}
+								</Button>
+								<Button
+									onClick={async () => {
+										const cleanName = projectImportRename.trim()
+										if (!cleanName) {
+											toast.error(t(locale, 'projectTitleRequired'))
+											return
+										}
+										await handleImportProjectData(
+											projectImportConflict.jsonData,
+											{
+												conflictResolution: 'rename',
+												newProjectName: cleanName,
+											},
+										)
+									}}
+								>
+									{t(locale, 'renameAndImport')}
+								</Button>
+							</DialogFooter>
+						</div>
+					)}
+				</DialogContent>
+			</Dialog>
+
+			<Dialog
+				open={externalLinkWarning !== null}
+				onOpenChange={open => !open && setExternalLinkWarning(null)}
+			>
+				<DialogContent>
+					{externalLinkWarning && (
+						<ExternalLinkWarningDialog
+							locale={locale}
+							projectTitle={externalLinkWarning.projectTitle}
+							url={externalLinkWarning.url}
+							onCancel={() => setExternalLinkWarning(null)}
+							onProceed={() => {
+								window.open(
+									externalLinkWarning.url,
+									'_blank',
+									'noopener,noreferrer',
+								)
+								setExternalLinkWarning(null)
+							}}
+							onTrustProject={() => {
+								setExternalLinkWarning(null)
+								setTrustConfirmProjectId(externalLinkWarning.projectId)
+							}}
+						/>
+					)}
+				</DialogContent>
+			</Dialog>
+
+			<Dialog
+				open={trustConfirmProject !== null}
+				onOpenChange={open => !open && setTrustConfirmProjectId(null)}
+			>
+				<DialogContent>
+					{trustConfirmProject && (
+						<TrustProjectDialog
+							locale={locale}
+							projectTitle={trustConfirmProject.title}
+							onCancel={() => setTrustConfirmProjectId(null)}
+							onConfirm={() => handleTrustProject(trustConfirmProject.id)}
+						/>
+					)}
+				</DialogContent>
+			</Dialog>
 		</div>
 	)
 }
@@ -1315,48 +1661,75 @@ function LinkCard({
 	link,
 	tags,
 	locale,
+	isTrustedProject,
+	onOpen,
 	onEdit,
 	onDelete,
 }: {
 	link: LinkItem
 	tags: Tag[]
 	locale: Locale
+	isTrustedProject: boolean
+	onOpen: () => void
 	onEdit: () => void
 	onDelete: () => void
 }) {
 	const tagLabels = link.tags
 		.map(tagId => tags.find(tag => tag.id === tagId)?.name)
 		.filter(Boolean) as string[]
+	const safeLinkUrl = isSafeExternalUrl(link.url) ? link.url : null
+	const safeIconUrl =
+		link.iconCache && isSafeImageUrl(link.iconCache)
+			? link.iconCache
+			: faviconProxy(link.url)
+	const content = (
+		<>
+			<div className='flex items-start gap-3'>
+				<img
+					src={safeIconUrl}
+					alt='favicon'
+					className='h-10 w-10 rounded-md border border-border bg-muted'
+					onError={event => {
+						;(event.currentTarget as HTMLImageElement).src = DEFAULT_FAVICON
+					}}
+				/>
+				<div className='min-w-0 flex-1'>
+					<div className='truncate text-sm font-semibold'>{link.title}</div>
+					<div className='mt-1 text-xs text-muted-foreground'>
+						{link.description}
+					</div>
+				</div>
+			</div>
+
+			<div className='mt-3 flex flex-wrap items-center gap-2'>
+				<Badge variant='outline'>{link.domain}</Badge>
+				{tagLabels.map(label => (
+					<Badge key={`${link.id}-${label}`} variant='outline'>
+						{label}
+					</Badge>
+				))}
+			</div>
+		</>
+	)
 
 	return (
 		<div className='rounded-xl border border-border bg-secondary p-4 transition hover:shadow-soft'>
-			<a href={link.url} target='_blank' rel='noreferrer' className='block'>
-				<div className='flex items-start gap-3'>
-					<img
-						src={link.iconCache || faviconProxy(link.url)}
-						alt='favicon'
-						className='h-10 w-10 rounded-md border border-border bg-muted'
-						onError={event => {
-							;(event.currentTarget as HTMLImageElement).src = DEFAULT_FAVICON
-						}}
-					/>
-					<div className='min-w-0 flex-1'>
-						<div className='truncate text-sm font-semibold'>{link.title}</div>
-						<div className='mt-1 text-xs text-muted-foreground'>
-							{link.description}
-						</div>
-					</div>
-				</div>
-
-				<div className='mt-3 flex flex-wrap items-center gap-2'>
-					<Badge variant='outline'>{link.domain}</Badge>
-					{tagLabels.map(label => (
-						<Badge key={`${link.id}-${label}`} variant='outline'>
-							{label}
-						</Badge>
-					))}
-				</div>
-			</a>
+			{safeLinkUrl ? (
+				<button
+					type='button'
+					onClick={onOpen}
+					className='block w-full text-left'
+					title={
+						isTrustedProject
+							? safeLinkUrl
+							: t(locale, 'externalLinkWarningTrigger')
+					}
+				>
+					{content}
+				</button>
+			) : (
+				<div className='block'>{content}</div>
+			)}
 
 			<div className='mt-3 flex justify-end gap-2'>
 				<Button variant='ghost' size='sm' onClick={onEdit}>
@@ -1654,9 +2027,11 @@ function LinkForm({
 						}
 						try {
 							const parsed = new URL(cleanUrl)
-							if (!parsed.hostname) throw new Error('invalid')
+							if (!parsed.hostname || !isSafeExternalUrl(cleanUrl)) {
+								throw new Error('invalid')
+							}
 						} catch {
-							toast.error(t(locale, 'enterValidUrl'))
+							toast.error(t(locale, 'enterSafeHttpUrl'))
 							return
 						}
 						onSave({
@@ -1677,54 +2052,20 @@ function LinkForm({
 function TagSettings({
 	locale,
 	tags,
-	lastExportTimestamp,
-	syncStatus,
-	syncStatusText,
-	syncStatusTooltip,
-	focusDatabaseSection,
 	onSave,
 	onClose,
-	onExport,
-	onImport,
-	onReset,
 }: {
 	locale: Locale
 	tags: Tag[]
-	lastExportTimestamp: string | null
-	syncStatus: 'safe' | 'risk'
-	syncStatusText: string
-	syncStatusTooltip: string
-	focusDatabaseSection: number
 	onSave: (tags: Tag[]) => void
 	onClose: () => void
-	onExport: () => void
-	onImport: (file: File) => Promise<void>
-	onReset: () => void
 }) {
 	const [localTags, setLocalTags] = React.useState(tags)
 	const [newTag, setNewTag] = React.useState('')
-	const fileInputRef = React.useRef<HTMLInputElement | null>(null)
-	const exportButtonRef = React.useRef<HTMLButtonElement | null>(null)
-	const databaseSectionRef = React.useRef<HTMLDivElement | null>(null)
 
 	React.useEffect(() => {
 		setLocalTags(tags)
 	}, [tags])
-
-	React.useEffect(() => {
-		if (focusDatabaseSection === 0) return
-		databaseSectionRef.current?.scrollIntoView({
-			block: 'nearest',
-			behavior: 'smooth',
-		})
-		exportButtonRef.current?.focus()
-	}, [focusDatabaseSection])
-
-	const lastExportLabel = lastExportTimestamp
-		? new Date(lastExportTimestamp).toLocaleString(
-				locale === 'ru' ? 'ru-RU' : 'en-US',
-			)
-		: t(locale, 'never')
 
 	return (
 		<div>
@@ -1759,10 +2100,7 @@ function TagSettings({
 				))}
 			</div>
 
-			<div
-				ref={databaseSectionRef}
-				className='mt-4 rounded-xl border border-border bg-muted p-3'
-			>
+			<div className='mt-4 rounded-xl border border-border bg-muted p-3'>
 				<div className='text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground'>
 					{t(locale, 'addTag')}
 				</div>
@@ -1791,6 +2129,67 @@ function TagSettings({
 				</div>
 			</div>
 
+			<DialogFooter className='mt-6'>
+				<Button variant='outline' onClick={onClose}>
+					{t(locale, 'cancel')}
+				</Button>
+				<Button
+					onClick={() => {
+						const cleaned = localTags
+							.map(tag => ({ ...tag, name: tag.name.trim() }))
+							.filter(tag => tag.name.length > 0)
+
+						onSave(cleaned)
+						onClose()
+					}}
+				>
+					{t(locale, 'save')}
+				</Button>
+			</DialogFooter>
+		</div>
+	)
+}
+
+function DatabaseSettings({
+	locale,
+	lastExportTimestamp,
+	syncStatus,
+	syncStatusText,
+	syncStatusTooltip,
+	onClose,
+	onExport,
+	onImport,
+	onReset,
+}: {
+	locale: Locale
+	lastExportTimestamp: string | null
+	syncStatus: 'safe' | 'risk'
+	syncStatusText: string
+	syncStatusTooltip: string
+	onClose: () => void
+	onExport: () => void
+	onImport: (file: File) => Promise<void>
+	onReset: () => void
+}) {
+	const fileInputRef = React.useRef<HTMLInputElement | null>(null)
+	const exportButtonRef = React.useRef<HTMLButtonElement | null>(null)
+
+	React.useEffect(() => {
+		exportButtonRef.current?.focus()
+	}, [])
+
+	const lastExportLabel = lastExportTimestamp
+		? new Date(lastExportTimestamp).toLocaleString(
+				locale === 'ru' ? 'ru-RU' : 'en-US',
+			)
+		: t(locale, 'never')
+
+	return (
+		<div>
+			<DialogHeader>
+				<DialogTitle>{t(locale, 'database')}</DialogTitle>
+			</DialogHeader>
+
 			<div className='mt-4 rounded-xl border border-border bg-muted p-3'>
 				<div className='text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground'>
 					{t(locale, 'database')}
@@ -1802,7 +2201,9 @@ function TagSettings({
 					<Button
 						variant='outline'
 						onClick={() => {
-							fileInputRef.current?.click()
+							if (!fileInputRef.current) return
+							fileInputRef.current.value = ''
+							fileInputRef.current.click()
 						}}
 					>
 						{t(locale, 'importDatabase')}
@@ -1844,19 +2245,7 @@ function TagSettings({
 
 			<DialogFooter className='mt-6'>
 				<Button variant='outline' onClick={onClose}>
-					{t(locale, 'cancel')}
-				</Button>
-				<Button
-					onClick={() => {
-						const cleaned = localTags
-							.map(tag => ({ ...tag, name: tag.name.trim() }))
-							.filter(tag => tag.name.length > 0)
-
-						onSave(cleaned)
-						onClose()
-					}}
-				>
-					{t(locale, 'save')}
+					{t(locale, 'close')}
 				</Button>
 			</DialogFooter>
 		</div>
@@ -1888,6 +2277,110 @@ function ConfirmDialog({
 				</Button>
 				<Button variant='destructive' onClick={onConfirm}>
 					{t(locale, 'confirm')}
+				</Button>
+			</DialogFooter>
+		</div>
+	)
+}
+
+function ExternalLinkWarningDialog({
+	locale,
+	projectTitle,
+	url,
+	onCancel,
+	onProceed,
+	onTrustProject,
+}: {
+	locale: Locale
+	projectTitle: string
+	url: string
+	onCancel: () => void
+	onProceed: () => void
+	onTrustProject: () => void
+}) {
+	return (
+		<div>
+			<DialogHeader>
+				<DialogTitle className='flex items-center gap-2'>
+					<ShieldAlert className='h-5 w-5 text-danger' />
+					<span>{t(locale, 'externalLinkWarningTitle')}</span>
+				</DialogTitle>
+				<DialogDescription>
+					{t(locale, 'externalLinkWarningDescription', { url })}
+				</DialogDescription>
+			</DialogHeader>
+			<p className='mt-4 text-sm text-muted-foreground'>
+				{t(locale, 'externalLinkWarningProjectHint', {
+					name: projectTitle,
+				})}
+			</p>
+			<DialogFooter className='mt-6'>
+				<Button variant='outline' onClick={onTrustProject}>
+					{t(locale, 'makeProjectTrusted')}
+				</Button>
+				<Button variant='outline' onClick={onCancel}>
+					{t(locale, 'cancel')}
+				</Button>
+				<Button onClick={onProceed}>{t(locale, 'goToSite')}</Button>
+			</DialogFooter>
+		</div>
+	)
+}
+
+function TrustProjectDialog({
+	locale,
+	projectTitle,
+	onCancel,
+	onConfirm,
+}: {
+	locale: Locale
+	projectTitle: string
+	onCancel: () => void
+	onConfirm: () => void
+}) {
+	const [confirmed, setConfirmed] = React.useState(false)
+	const [delayComplete, setDelayComplete] = React.useState(false)
+
+	React.useEffect(() => {
+		setConfirmed(false)
+		setDelayComplete(false)
+		const handle = window.setTimeout(() => {
+			setDelayComplete(true)
+		}, 1800)
+		return () => window.clearTimeout(handle)
+	}, [projectTitle])
+
+	return (
+		<div>
+			<DialogHeader>
+				<DialogTitle>{t(locale, 'trustProjectTitle')}</DialogTitle>
+				<DialogDescription>
+					{t(locale, 'trustProjectDescription', { name: projectTitle })}
+				</DialogDescription>
+			</DialogHeader>
+			<div className='mt-4 space-y-2 text-sm text-muted-foreground'>
+				<p>{t(locale, 'trustProjectRiskNoWarnings')}</p>
+				<p>{t(locale, 'trustProjectRiskTrustedAuthor')}</p>
+				<p>{t(locale, 'trustProjectRiskIrreversible')}</p>
+				<p>{t(locale, 'trustProjectQuestion')}</p>
+			</div>
+			<label className='mt-4 flex items-start gap-3 text-sm'>
+				<Checkbox
+					checked={confirmed}
+					onCheckedChange={checked => setConfirmed(Boolean(checked))}
+				/>
+				<span>{t(locale, 'trustProjectCheckbox')}</span>
+			</label>
+			<DialogFooter className='mt-6'>
+				<Button variant='outline' onClick={onCancel}>
+					{t(locale, 'cancel')}
+				</Button>
+				<Button
+					variant='destructive'
+					disabled={!confirmed || !delayComplete}
+					onClick={onConfirm}
+				>
+					{t(locale, 'confirmTrustProject')}
 				</Button>
 			</DialogFooter>
 		</div>

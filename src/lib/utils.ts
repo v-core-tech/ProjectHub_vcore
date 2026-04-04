@@ -1,6 +1,8 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 
+const SAFE_EXTERNAL_PROTOCOLS = new Set(["http:", "https:"]);
+
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
@@ -20,6 +22,19 @@ export function extractDomain(url: string) {
   } catch {
     return "";
   }
+}
+
+export function isSafeExternalUrl(url: string) {
+  try {
+    const parsed = new URL(url);
+    return SAFE_EXTERNAL_PROTOCOLS.has(parsed.protocol) && parsed.hostname.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+export function isSafeImageUrl(url: string) {
+  return isSafeExternalUrl(url);
 }
 
 export function downloadCsv(filename: string, rows: string[][]) {
